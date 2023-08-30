@@ -5,9 +5,12 @@ module PostgREST.Plan.Types
   , CoercibleFilter(..)
   , TransformerProc
   , CoercibleOrderTerm(..)
+  , RelSelectTerm(..)
+  , SelectTerm(..)
+  , SpreadSelectTerm(..)
   ) where
 
-import PostgREST.ApiRequest.Types (Field, JsonPath, LogicOperator,
+import PostgREST.ApiRequest.Types (AggregateFunction, Alias, Cast, Field, JsonPath, LogicOperator,
                                    OpExpr, OrderDirection, OrderNulls)
 
 import PostgREST.SchemaCache.Identifiers (FieldName)
@@ -64,4 +67,38 @@ data CoercibleOrderTerm
     , coDirection :: Maybe OrderDirection
     , coNullOrder :: Maybe OrderNulls
     }
+  deriving (Eq, Show)
+
+data SelectTerm = SelectTerm
+  { selField       :: CoercibleField
+  , selAggFunction :: Maybe AggregateFunction
+  , selAggCast     :: Maybe Cast
+  , selCast        :: Maybe Cast
+  , selAlias       :: Maybe Alias
+  }
+
+  deriving (Eq, Show)
+
+data RelSelectTerm
+  = HasOneJsonObject
+      { relSelName  :: Text
+      , relAggAlias :: Alias
+      }
+  | HasManyJsonArray
+      { relSelName  :: Text
+      , relAggAlias :: Alias
+      }
+  | HasOneSpread
+      { relSpreadSel  :: [SpreadSelectTerm]
+      , relAggAlias   :: Alias
+      }
+  deriving (Eq, Show)
+
+data SpreadSelectTerm =
+  SpreadSelectTerm
+  { srdSelName        :: Text
+  , srdSelAggFunction :: Maybe AggregateFunction
+  , srdSelAggCast     :: Maybe Cast
+  , srdSelAlias       :: Maybe Alias
+  }
   deriving (Eq, Show)

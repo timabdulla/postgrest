@@ -9,6 +9,7 @@ module PostgREST.Query.SqlFragment
   ( noLocationF
   , aggF
   , countF
+  , groupF
   , fromQi
   , limitOffsetF
   , locationF
@@ -21,6 +22,7 @@ module PostgREST.Query.SqlFragment
   , pgFmtLogicTree
   , pgFmtOrderTerm
   , pgFmtSelectItem
+  , pgFmtSpreadSelectItem
   , fromJsonBodyF
   , responseHeadersF
   , responseStatusF
@@ -51,7 +53,9 @@ import Control.Arrow ((***))
 import Data.Foldable                 (foldr1)
 import Text.InterpolatedString.Perl6 (qc)
 
-import PostgREST.ApiRequest.Types        (Alias, Cast,
+import PostgREST.ApiRequest.Types        (AggregateFunction (..),
+                                          Alias,
+                                          Cast,
                                           FtsOperator (..),
                                           JsonOperand (..),
                                           JsonOperation (..),
@@ -72,6 +76,9 @@ import PostgREST.Plan.Types              (CoercibleField (..),
                                           CoercibleFilter (..),
                                           CoercibleLogicTree (..),
                                           CoercibleOrderTerm (..),
+                                          RelSelectTerm(..),
+                                          SelectTerm(..),
+                                          SpreadSelectTerm(..),
                                           unknownField)
 import PostgREST.RangeQuery              (NonnegRange, allRange,
                                           rangeLimit, rangeOffset)
@@ -83,7 +90,7 @@ import PostgREST.SchemaCache.Routine     (ResultAggregate (..),
                                           funcReturnsSetOfScalar,
                                           funcReturnsSingleComposite)
 
-import Protolude hiding (cast)
+import Protolude hiding (cast, Sum)
 
 sourceCTEName :: Text
 sourceCTEName = "pgrst_source"
@@ -261,12 +268,33 @@ pgFmtCoerceNamed :: CoercibleField -> SQL.Snippet
 pgFmtCoerceNamed CoercibleField{cfName=fn, cfTransform=(Just formatterProc)} = pgFmtCallUnary formatterProc (pgFmtIdent fn) <> " AS " <> pgFmtIdent fn
 pgFmtCoerceNamed CoercibleField{cfName=fn} = pgFmtIdent fn
 
-pgFmtSelectItem :: QualifiedIdentifier -> (CoercibleField, Maybe Cast, Maybe Alias) -> SQL.Snippet
-pgFmtSelectItem table (fld, Nothing, alias) = pgFmtTableCoerce table fld <> pgFmtAs (cfName fld) (cfJsonPath fld) alias
--- Ideally we'd quote the cast with "pgFmtIdent cast". However, that would invalidate common casts such as "int", "bigint", etc.
--- Try doing: `select 1::"bigint"` - it'll err, using "int8" will work though. There's some parser magic that pg does that's invalidated when quoting.
--- Not quoting should be fine, we validate the input on Parsers.
-pgFmtSelectItem table (fld, Just cast, alias) = "CAST (" <> pgFmtTableCoerce table fld <> " AS " <> SQL.sql (encodeUtf8 cast) <> " )" <> pgFmtAs (cfName fld) (cfJsonPath fld) alias
+pgFmtSelectItem :: QualifiedIdentifier -> SelectTerm -> SQL.Snippet
+pgFmtSelectItem table SelectTerm{selField=fld, selAggFunction=agg, selAggCast=aggCast, selCast=cast, selAlias=alias} =
+  pgFmtApplyAggregate agg aggCast (pgFmtApplyCast cast (pgFmtTableCoerce table fld)) <> pgFmtAs alias
+
+pgFmtSpreadSelectItem :: Alias -> SpreadSelectTerm -> SQL.Snippet
+pgFmtSpreadSelectItem aggAlias SpreadSelectTerm{srdSelName, srdSelAggFunction, srdSelAggCast, srdSelAlias} =
+  pgFmtApplyAggregate srdSelAggFunction srdSelAggCast fullSelName <> pgFmtAs srdSelAlias
+  where
+    fullSelName = case srdSelName of
+      "*" -> pgFmtIdent aggAlias <> ".*"
+      _   -> pgFmtIdent aggAlias <> "." <> pgFmtIdent srdSelName
+
+pgFmtApplyAggregate :: Maybe AggregateFunction -> Maybe Cast -> SQL.Snippet -> SQL.Snippet
+pgFmtApplyAggregate Nothing _ snippet = snippet
+pgFmtApplyAggregate (Just agg) aggCast snippet =
+  pgFmtApplyCast aggCast aggregatedSnippet
+  where
+    aggregatedSnippet = case agg of
+      Sum   -> "SUM( "   <> snippet <> " )"
+      Max   -> "MAX( "   <> snippet <> " )"
+      Min   -> "MIN( "   <> snippet <> " )"
+      Avg   -> "AVG( "   <> snippet <> " )"
+      Count -> "COUNT( " <> snippet <> " )"
+
+pgFmtApplyCast :: Maybe Cast -> SQL.Snippet -> SQL.Snippet
+pgFmtApplyCast Nothing snippet = snippet
+pgFmtApplyCast (Just cast) snippet = "CAST( " <> snippet <> " AS " <> SQL.sql (encodeUtf8 cast) <> " )"
 
 -- TODO: At this stage there shouldn't be a Maybe since ApiRequest should ensure that an INSERT/UPDATE has a body
 fromJsonBodyF :: Maybe LBS.ByteString -> [CoercibleField] -> Bool -> Bool -> Bool -> SQL.Snippet
@@ -398,17 +426,46 @@ pgFmtJsonPath = \case
     pgFmtJsonOperand (JKey k) = unknownLiteral k
     pgFmtJsonOperand (JIdx i) = unknownLiteral i <> "::int"
 
-pgFmtAs :: FieldName -> JsonPath -> Maybe Alias -> SQL.Snippet
-pgFmtAs _ [] Nothing = mempty
-pgFmtAs fName jp Nothing = case jOp <$> lastMay jp of
-  Just (JKey key) -> " AS " <> pgFmtIdent key
-  Just (JIdx _)   -> " AS " <> pgFmtIdent (fromMaybe fName lastKey)
-    -- We get the lastKey because on:
-    -- `select=data->1->mycol->>2`, we need to show the result as [ {"mycol": ..}, {"mycol": ..} ]
-    -- `select=data->3`, we need to show the result as [ {"data": ..}, {"data": ..} ]
-    where lastKey = jVal <$> find (\case JKey{} -> True; _ -> False) (jOp <$> reverse jp)
-  Nothing -> mempty
-pgFmtAs _ _ (Just alias) = " AS " <> pgFmtIdent alias
+pgFmtAs :: Maybe Alias -> SQL.Snippet
+pgFmtAs Nothing = mempty
+pgFmtAs (Just alias) = " AS " <> pgFmtIdent alias
+
+groupF :: QualifiedIdentifier -> [SelectTerm] -> [RelSelectTerm] -> SQL.Snippet
+groupF qi select relSelect =
+  if (noSelectsAreAggregated && noRelSelectsAreAggregated) || null groupTerms
+  then mempty
+  else
+    " GROUP BY " <> intercalateSnippet ", " groupTerms
+  where
+    noSelectsAreAggregated = null $ [s | s@(SelectTerm { selAggFunction = Just _ }) <- select]
+    noRelSelectsAreAggregated = all (\case HasOneSpread sels _ -> all (isNothing . srdSelAggFunction) sels; _ -> True) relSelect
+    groupTermsFromSelect = catMaybes $ pgFmtGroup qi <$> select
+    groupTermsFromRelSelect = catMaybes $ groupTermFromRelSelectTerm <$> relSelect
+    groupTerms = groupTermsFromSelect ++ groupTermsFromRelSelect
+
+groupTermFromRelSelectTerm :: RelSelectTerm -> Maybe SQL.Snippet
+groupTermFromRelSelectTerm (HasOneJsonObject { relSelName }) =
+  Just $ pgFmtIdent relSelName
+
+groupTermFromRelSelectTerm (HasManyJsonArray { relSelName }) =
+  Just $ pgFmtIdent relSelName
+
+groupTermFromRelSelectTerm (HasOneSpread { relSpreadSel, relAggAlias }) =
+  if null groupTerms
+  then Nothing
+  else
+    Just $ intercalateSnippet ", " groupTerms
+  where
+    processTerm :: SpreadSelectTerm -> Maybe SQL.Snippet
+    processTerm SpreadSelectTerm{srdSelAggFunction = Just _} = Nothing
+    processTerm SpreadSelectTerm{srdSelName, srdSelAlias} =
+      Just $ pgFmtIdent relAggAlias <> "." <> pgFmtIdent (fromMaybe srdSelName srdSelAlias)
+    groupTerms = catMaybes $ processTerm <$> relSpreadSel
+
+pgFmtGroup :: QualifiedIdentifier -> SelectTerm -> Maybe SQL.Snippet
+pgFmtGroup _ SelectTerm{selAggFunction=Just _} = Nothing
+pgFmtGroup _ SelectTerm{selAlias=Just alias, selAggFunction=Nothing} = Just $ pgFmtIdent alias
+pgFmtGroup qi SelectTerm{selField=fld, selAlias=Nothing, selAggFunction=Nothing} = Just $ pgFmtField qi fld
 
 countF :: SQL.Snippet -> Bool -> (SQL.Snippet, SQL.Snippet)
 countF countQuery shouldCount =
@@ -497,6 +554,7 @@ setConfigLocalJson prefix keyVals = [setConfigLocal mempty (prefix, gucJsonVal k
     arrayByteStringToText :: [(ByteString, ByteString)] -> [(Text,Text)]
     arrayByteStringToText keyVal = (T.decodeUtf8 *** T.decodeUtf8) <$> keyVal
 
+-- Investigate this
 aggF :: Maybe Routine -> ResultAggregate -> SQL.Snippet
 aggF rout = \case
   BuiltinAggJson             -> asJsonF rout False

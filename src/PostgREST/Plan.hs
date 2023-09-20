@@ -577,7 +577,7 @@ addRelSelects node@(Node rp forest)
   | null forest = Right node
   | otherwise   =
     let newForest     = rights $ addRelSelects <$> forest
-        newRelSelects = catMaybes $ generateRelSelectTerm <$> forest
+        newRelSelects = catMaybes $ generateRelSelectTerm <$> newForest
     in Right $ Node rp { relSelect = newRelSelects } newForest
 
 generateRelSelectTerm :: ReadPlanTree -> Maybe RelSelectTerm

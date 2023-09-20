@@ -6,6 +6,7 @@ module PostgREST.Plan.Types
   , TransformerProc
   , CoercibleOrderTerm(..)
   , RelSelectTerm(..)
+  , RelJsonEmbedMode(..)
   , SelectTerm(..)
   , SpreadSelectTerm(..)
   ) where
@@ -79,14 +80,15 @@ data SelectTerm = SelectTerm
 
   deriving (Eq, Show)
 
+data RelJsonEmbedMode = JsonObject | JsonArray
+  deriving (Show, Eq)
+
 data RelSelectTerm
-  = HasOneJsonObject
-      { relSelName  :: Text
-      , relAggAlias :: Alias
-      }
-  | HasManyJsonArray
-      { relSelName  :: Text
-      , relAggAlias :: Alias
+  = JsonEmbed
+      { relSelName     :: Text
+      , relAggAlias    :: Alias
+      , relEmbedMode   :: RelJsonEmbedMode
+      , relEmptyEmbed  :: Bool
       }
   | HasOneSpread
       { relSpreadSel  :: [SpreadSelectTerm]

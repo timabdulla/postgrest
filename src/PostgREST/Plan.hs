@@ -574,22 +574,23 @@ findRel schema allRels origin target hint =
 
 addRelSelects :: ReadPlanTree -> Either ApiRequestError ReadPlanTree
 addRelSelects node@(Node rp forest)
-  | null forest = Right node  -- If it's a leaf node, return it unaltered
+  | null forest = Right node
   | otherwise   =
-    let newForest     = rights $ addRelSelects <$> forest  -- assuming you're okay with discarding Lefts
+    let newForest     = rights $ addRelSelects <$> forest
         newRelSelects = catMaybes $ generateRelSelectTerm <$> forest
     in Right $ Node rp { relSelect = newRelSelects } newForest
 
 generateRelSelectTerm :: ReadPlanTree -> Maybe RelSelectTerm
 -- TODO: see how else this is aliased (rp)
-generateRelSelectTerm (Node rp@ReadPlan{relToParent=Just rel, relName, relAlias, relAggAlias, relIsSpread} _)
-  = Just $
-    let name = fromMaybe relName relAlias
-    in if relIsToOne rel
-       then if relIsSpread
-            then HasOneSpread { relSpreadSel = generateSpreadSelectTerms rp, relAggAlias }
-            else HasOneJsonObject { relSelName = name, relAggAlias }
-       else HasManyJsonArray { relSelName = name, relAggAlias }
+generateRelSelectTerm (Node rp@ReadPlan{relToParent=Just _, relAggAlias, relIsSpread = True} _) =
+  Just $ HasOneSpread { relSpreadSel = generateSpreadSelectTerms rp, relAggAlias }
+generateRelSelectTerm (Node ReadPlan{relToParent=Just rel, select, relName, relAlias, relAggAlias, relIsSpread = False} forest) =
+  Just $ JsonEmbed { relEmbedMode, relSelName, relAggAlias, relEmptyEmbed }
+  where
+    relSelName = fromMaybe relName relAlias
+    relEmbedMode = if relIsToOne rel then JsonObject else JsonArray
+    relEmptyEmbed = null select && null forest
+
 generateRelSelectTerm _ = Nothing
 
 generateSpreadSelectTerms :: ReadPlan -> [SpreadSelectTerm]
@@ -603,9 +604,7 @@ generateSpreadSelectTerms ReadPlan{select, relSelect} =
 
     relSelectSpread = concatMap relSelectToSpread relSelect
     relSelectToSpread :: RelSelectTerm -> [SpreadSelectTerm]
-    relSelectToSpread (HasOneJsonObject{relSelName}) =
-      [SpreadSelectTerm { srdSelName = relSelName, srdSelAggFunction = Nothing, srdSelAggCast = Nothing, srdSelAlias = Nothing }]
-    relSelectToSpread (HasManyJsonArray{relSelName}) =
+    relSelectToSpread (JsonEmbed{relSelName}) =
       [SpreadSelectTerm { srdSelName = relSelName, srdSelAggFunction = Nothing, srdSelAggCast = Nothing, srdSelAlias = Nothing }]
     relSelectToSpread (HasOneSpread{relSpreadSel}) =
       relSpreadSel

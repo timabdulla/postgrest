@@ -444,10 +444,7 @@ groupF qi select relSelect =
     groupTerms = groupTermsFromSelect ++ groupTermsFromRelSelect
 
 groupTermFromRelSelectTerm :: RelSelectTerm -> Maybe SQL.Snippet
-groupTermFromRelSelectTerm (HasOneJsonObject { relSelName }) =
-  Just $ pgFmtIdent relSelName
-
-groupTermFromRelSelectTerm (HasManyJsonArray { relSelName }) =
+groupTermFromRelSelectTerm (JsonEmbed { relSelName }) =
   Just $ pgFmtIdent relSelName
 
 groupTermFromRelSelectTerm (HasOneSpread { relSpreadSel, relAggAlias }) =

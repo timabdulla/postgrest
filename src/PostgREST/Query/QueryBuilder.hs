@@ -63,19 +63,21 @@ readPlanToQuery readPlanTree@(Node ReadPlan{select,from=mainQi,fromAlias,where_=
 
 getJoinSelects :: ReadPlanTree -> [SQL.Snippet]
 getJoinSelects (Node ReadPlan{relSelect=relSelectTerms} _) =
-  map termToSnippet relSelectTerms
+  catMaybes $ map termToSnippet relSelectTerms
   where
-    termToSnippet :: RelSelectTerm -> SQL.Snippet
+    termToSnippet :: RelSelectTerm -> Maybe SQL.Snippet
     termToSnippet term =
       let aggAlias = pgFmtIdent $ PostgREST.Plan.Types.relAggAlias term
       in
         case term of
-          HasOneJsonObject{relSelName} ->
-            "row_to_json(" <> aggAlias <> ".*)::jsonb AS " <> pgFmtIdent relSelName
-          HasManyJsonArray{relSelName} ->
-            "COALESCE( " <> aggAlias <> "." <> aggAlias <> ", '[]') AS " <> pgFmtIdent relSelName
+          JsonEmbed{relSelName, relEmbedMode = JsonObject, relEmptyEmbed = False } ->
+            Just $ "row_to_json(" <> aggAlias <> ".*)::jsonb AS " <> pgFmtIdent relSelName
+          JsonEmbed{relSelName, relEmbedMode = JsonArray, relEmptyEmbed = False } ->
+            Just $ "COALESCE( " <> aggAlias <> "." <> aggAlias <> ", '[]') AS " <> pgFmtIdent relSelName
+          JsonEmbed{relEmptyEmbed = True} ->
+            Nothing
           HasOneSpread{relSpreadSel, relAggAlias} ->
-            intercalateSnippet ", " (pgFmtSpreadSelectItem relAggAlias <$> relSpreadSel)
+            Just $ intercalateSnippet ", " (pgFmtSpreadSelectItem relAggAlias <$> relSpreadSel)
 
 getJoins :: ReadPlanTree -> [SQL.Snippet]
 getJoins (Node _ []) = []
@@ -95,11 +97,11 @@ getJoins (Node ReadPlan{relSelect=relSelectTerms} forest) =
         aggAlias = pgFmtIdent $ PostgREST.Plan.Types.relAggAlias relSelectTerm
       in
         case relSelectTerm of
-          HasOneJsonObject{} ->
+          JsonEmbed{relEmbedMode = JsonObject} ->
             correlatedSubquery subquery aggAlias "TRUE"
           HasOneSpread{} ->
             correlatedSubquery subquery aggAlias "TRUE"
-          HasManyJsonArray{} ->
+          JsonEmbed{relEmbedMode = JsonArray} ->
             let
               subq = "SELECT json_agg(" <> aggAlias <> ")::jsonb AS " <> aggAlias <> " FROM (" <> subquery <> " ) AS " <> aggAlias
               condition = if relJoinType == Just JTInner then aggAlias <> " IS NOT NULL" else "TRUE"

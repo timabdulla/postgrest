@@ -35,6 +35,7 @@ import qualified Feature.OpenApi.ProxySpec
 import qualified Feature.OpenApi.RootSpec
 import qualified Feature.OpenApi.SecurityOpenApiSpec
 import qualified Feature.OptionsSpec
+import qualified Feature.Query.AggregateFunctionsSpec
 import qualified Feature.Query.AndOrParamsSpec
 import qualified Feature.Query.ComputedRelsSpec
 import qualified Feature.Query.DeleteSpec
@@ -126,7 +127,8 @@ main = do
         analyzeTable "child_entities"
 
       specs = uncurry describe <$> [
-          ("Feature.Query.AndOrParamsSpec"               , Feature.Query.AndOrParamsSpec.spec actualPgVersion)
+          ("Feature.Query.AggregateFunctionsSpec"        , Feature.Query.AggregateFunctionsSpec.spec actualPgVersion)
+        , ("Feature.Query.AndOrParamsSpec"               , Feature.Query.AndOrParamsSpec.spec actualPgVersion)
         , ("Feature.Auth.AuthSpec"                       , Feature.Auth.AuthSpec.spec actualPgVersion)
         , ("Feature.ConcurrentSpec"                      , Feature.ConcurrentSpec.spec)
         , ("Feature.CorsSpec"                            , Feature.CorsSpec.spec)
